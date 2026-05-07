@@ -7,7 +7,7 @@ $ConfigFileExtra = Join-Path $ConfDir "eventlog-powershell.alloy"
 $OldConfigFile = Join-Path $InstallDir "config.alloy" # Default file in root
 $Executable = Join-Path $InstallDir "alloy-windows-amd64.exe"
 
-# Install Alloy from Share
+# Install Alloy
 if (Test-Path $InstallerPath) {
     Start-Process -FilePath $InstallerPath -ArgumentList "/S" -Wait
 } else {
@@ -20,11 +20,12 @@ if (Test-Path $OldConfigFile) {
     Remove-Item -Path $OldConfigFile -Force
 }
 
-# Create the conf.d directory and write the new configuration
+# Create the conf.d directory for modular configuration.
 if (-not (Test-Path $ConfDir)) {
     New-Item -ItemType Directory -Path $ConfDir -Force
 }
 
+# Define main Alloy configuration, the same for all machines.
 $AlloyConfig = @'
 // ==============================================================================
 // LOGS PIPELINE
@@ -142,6 +143,7 @@ otelcol.exporter.otlphttp "default" {
 }
 '@ | Out-File -FilePath $ConfigFile -Encoding utf8
 
+# Define additional configuration for PowerShell event logs, as an example of modular configuration.
 $AlloyConfigExtra = @'
 loki.source.windowsevent "powershell" {
   eventlog_name          = "Microsoft-Windows-PowerShell/Operational"
@@ -150,13 +152,14 @@ loki.source.windowsevent "powershell" {
 }
 '@ | Out-File -FilePath $ConfigFileExtra -Encoding utf8
 
-# Adjust Registry Settings
+# Adjust Registry Settings:
+# Set the executable path and arguments for the Alloy service to use the new configuration directory and disable reporting.
 $RegPath = "HKLM:\SOFTWARE\GrafanaLabs\Alloy"
 $Arguments = @(
     "run",
     "$ConfDir\",
     "--storage.path=C:\ProgramData\GrafanaLabs\Alloy\data",
-	"--disable-reporting"
+	  "--disable-reporting"
 )
 
 if (-not (Test-Path $RegPath)) {
