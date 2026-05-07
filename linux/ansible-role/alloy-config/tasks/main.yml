@@ -1,0 +1,3 @@
+---
+- import_tasks: alloy-install.yml
+- import_tasks: alloy-firewall.yml

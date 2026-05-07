@@ -1,0 +1,88 @@
+
+// --------------------------
+//    LOGS (JOURNALD) → OTLP/HTTP
+// --------------------------
+
+// Loki Relabel rules, used to add labels to the logs.
+loki.relabel "logs" {
+  forward_to = []
+  rule {
+    source_labels = ["__journal__systemd_unit"]
+    target_label  = "unit"
+  }
+}
+
+// Loki Source for systemd journal logs, forwards to the Loki receiver below.
+loki.source.journal "logs"  {
+  forward_to    = [otelcol.receiver.loki.logs.receiver]
+  relabel_rules = loki.relabel.logs.rules
+  labels        = { component = "loki.source.journal"}
+}
+
+// Loki Receiver, receives the logs from the Loki source above and forwards them to the Resource Detection processor.
+otelcol.receiver.loki "logs" {
+  output {
+    logs = [otelcol.processor.resourcedetection.logs.input]
+  }
+}
+
+// Host Resource Detection, adds resource attributes to the logs (like hostname).
+otelcol.processor.resourcedetection "logs" {
+  detectors = ["system"]
+  system {
+    hostname_sources = ["os"]
+  }
+
+  output {
+    logs = [otelcol.processor.transform.logs.input]
+  }
+}
+
+// Adds service.name, this helps with drilldown and quering in Grafana.
+otelcol.processor.transform "logs" {
+  log_statements {
+    context = "log"
+    statements = [
+      // If loki.process set a log attribute `service`,
+      // copy it into the resource attribute service.name:
+      `set(resource.attributes["service.name"], attributes["service"]) where attributes["service"] != nil`,
+      // default if not set:
+      `set(resource.attributes["service.name"], "linux-host") where attributes["service"] == nil`,
+      `set(resource.attributes["service.instance.id"], resource.attributes["host.name"])`,
+    ]
+  }
+  output { logs = [otelcol.processor.memory_limiter.logs.input] }
+}
+
+
+// Memory Limiter Processor, limits the memory usage of the collector. Should always be placed before any batch processor.
+otelcol.processor.memory_limiter "logs" {
+  check_interval = "5s"     // How often to check memory usage.
+  limit = "128MiB"          // Limit total memory usage to this value.
+  spike_limit = "64MiB"    // Allow for short spikes, e.g. during bursts.
+
+  output {
+      logs = [otelcol.processor.batch.logs.input]
+  }
+}
+
+// Batch Processor, batches the logs before sending them to the OTLP/HTTP exporter.
+otelcol.processor.batch "logs" {
+  timeout = "500ms"              // Send at least a batch every timeout (if data is available).
+  send_batch_size = 300      // Send directly after this amount is collected, even if the timeout isn't reached yet.
+  send_batch_max_size = 600  // Maximum number of items to send in a batch. Batches larger than this will be split up, over timeout value.
+
+  output {
+    logs = [otelcol.exporter.otlphttp.logs.input]
+  }
+}
+
+// OTLP/HTTP Exporter, exports the logs to the specified endpoint.
+otelcol.exporter.otlphttp "logs" {
+  client {
+    endpoint = "{{ alloy_endpoint_url }}"
+  }
+  retry_on_failure {
+    enabled = false
+  }
+}

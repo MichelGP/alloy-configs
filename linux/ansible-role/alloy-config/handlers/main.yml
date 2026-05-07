@@ -1,0 +1,4 @@
+- name: Reload alloy
+  ansible.builtin.service:
+    name: alloy
+    state: reloaded

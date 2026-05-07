@@ -1,0 +1,59 @@
+// GATEWAY CONFIGURATION -- forwards all OTLP data to the specified endpoint.
+// Used for: multiple agents sending data to a single gateway/collector.
+
+// OTLP Receiver, receives OTLP data over HTTP and gRPC.
+otelcol.receiver.otlp "gateway" {
+  http {
+    // Preserve metadata / headers (we need x-scope-orgid for multi-tenancy)
+    include_metadata = true
+  }        
+  grpc {
+    // Preserve metadata / headers (we need x-scope-orgid for multi-tenancy)
+    include_metadata = true
+  }
+
+  output {
+    logs    = [otelcol.processor.batch.gateway.input]
+    metrics = [otelcol.processor.batch.gateway.input]
+    traces  = [otelcol.processor.batch.gateway.input]
+  }
+}
+
+// Batching processor for logs/metrics/traces
+otelcol.processor.batch "gateway" {
+  timeout             = "100ms"
+  send_batch_size     = 300
+  send_batch_max_size = 600
+
+  // Preserve x-scope-orgid
+  metadata_keys = ["x-scope-orgid"]
+
+  output {
+    logs    = [otelcol.exporter.otlphttp.gateway.input]
+    metrics = [otelcol.exporter.otlphttp.gateway.input]
+    traces  = [otelcol.exporter.otlphttp.gateway.input]
+  }
+}
+
+// Set the x-scope-orgid header for multi-tenancy.
+otelcol.auth.headers "gateway" {
+  header {
+    key          = "X-Scope-OrgID"
+    from_context = "x-scope-orgid"
+  }
+}
+
+// OTLP/HTTP Exporter, exports the data to the specified endpoint.
+otelcol.exporter.otlphttp "gateway" {
+  client {
+    endpoint = "{{ alloy_gateway_endpoint_url }}"
+    auth = otelcol.auth.headers.gateway.handler
+    tls {
+      insecure             = true
+      insecure_skip_verify = true
+    }
+  }
+  retry_on_failure {
+    enabled = false
+  }
+}

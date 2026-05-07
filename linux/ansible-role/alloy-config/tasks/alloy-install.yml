@@ -1,0 +1,40 @@
+---
+# Create initial user to give permissions on the conf.d dir.
+# The included Grafana role will set the correct permissions.
+- name: Add the Alloy system user (bootstrap)
+  ansible.builtin.user:
+    name: "alloy"
+    system: true
+    create_home: false
+    state: present
+
+# We purge all config to keep rthings tidy.
+- name: Delete config dir (cleanup all config)
+  ansible.builtin.file:
+    path: /etc/alloy/config.d
+    state: absent
+
+# Recreate the directory.
+- name: Ensure config directory exists
+  ansible.builtin.file:
+    path: /etc/alloy/config.d
+    state: directory
+    owner: alloy
+    group: alloy
+    mode: "0755"
+
+# Deploy the Alloy config files in the conf.d directory.
+- name: Deploy Alloy config fragments
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/alloy/config.d/{{ item }}"
+    owner: alloy
+    group: alloy
+    mode: "0644"
+  loop: "{{ alloy_configs }}"
+  notify: Reload alloy
+
+# Install Grafana Alloy
+- name: Include Grafana Alloy role
+  ansible.builtin.include_role:
+    name: grafana.grafana.alloy

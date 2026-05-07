@@ -1,0 +1,106 @@
+
+// =====================
+// LOGS NGINX
+// =====================
+
+// NGINX access.log
+loki.source.file "nginx_access_logs" {
+  targets    = [{ __path__ = "/var/log/nginx/access.log" }]
+  forward_to = [loki.process.access_logs.receiver]
+}
+
+loki.process "access_logs" {
+  forward_to = [otelcol.receiver.loki.nginx_logs.receiver]
+
+  // Parse combined access format (safe: no-op on non-matching lines)
+  stage.regex {
+    expression = "^(?P<remote_ip>\\S+) \\S+ \\S+ \\[(?P<timestamp>[^\\]]+)\\] \"(?P<request>[^\"]*)\" (?P<status>\\d{3}) (?P<body_bytes_sent>\\d+)(?: \"(?P<http_referer>[^\"]*)\" \"(?P<http_user_agent>[^\"]*)\")?"
+  }
+  // Split "request" → method, uri, http_version
+  stage.regex {
+    source     = "request"
+    expression = "^(?P<method>[A-Z]+) (?P<uri>\\S+)(?: HTTP/(?P<http_version>\\d\\.\\d))?$"
+  }
+  // Use nginx timestamp as event time
+  stage.timestamp {
+    source = "timestamp"
+    format = "02/Jan/2006:15:04:05 -0700"
+  }
+  // Keep low-cardinality labels
+  stage.labels { values = { service = "service", status = "status", method = "method" } }
+}
+
+// NGINX error.log (Debian/Ubuntu default: "YYYY/MM/DD HH:MM:SS ...")
+loki.source.file "nginx_error_logs" {
+  targets    = [{ __path__ = "/var/log/nginx/error.log" }]
+  forward_to = [loki.process.error_logs.receiver]
+}
+
+loki.process "error_logs" {
+  forward_to = [otelcol.receiver.loki.nginx_logs.receiver]
+
+  // Timestamp at start of line: 2006/01/02 15:04:05
+  stage.regex {
+    expression = "^(?P<timestamp>\\d{4}/\\d{2}/\\d{2} \\d{2}:\\d{2}:\\d{2})"
+  }
+  stage.timestamp {
+    source = "timestamp"
+    format = "2006/01/02 15:04:05"
+  }
+}
+
+// Single receiver for all Loki pipelines above
+otelcol.receiver.loki "nginx_logs" {
+  output { logs = [otelcol.processor.resourcedetection.nginx_logs.input] }
+}
+
+otelcol.processor.resourcedetection "nginx_logs" {
+  detectors = ["system"]
+  system { hostname_sources = ["os"] }
+  output { logs = [otelcol.processor.transform.nginx_logs.input] }
+}
+
+// Adds service.name, this helps with drilldown and quering in Grafana.
+otelcol.processor.transform "nginx_logs" {
+  log_statements {
+    context = "log"
+    statements = [
+      // If loki.process set a log attribute `service`,
+      // copy it into the resource attribute service.name:
+      `set(resource.attributes["service.name"], attributes["service"]) where attributes["service"] != nil`,
+      // default if not set:
+      `set(resource.attributes["service.name"], "linux-nginx") where attributes["service"] == nil`,
+      `set(resource.attributes["service.instance.id"], resource.attributes["host.name"])`,
+    ]
+  }
+  output { logs = [otelcol.processor.memory_limiter.nginx_logs.input] }
+}
+
+// Memory Limiter Processor, limits the memory usage of the collector. Should always be placed before any batch processor.
+otelcol.processor.memory_limiter "nginx_logs" {
+  check_interval = "5s"     // How often to check memory usage.
+  limit = "128MiB"          // Limit total memory usage to this value.
+  spike_limit = "64MiB"    // Allow for short spikes, e.g. during bursts.
+
+  output {
+      logs = [otelcol.processor.batch.nginx_logs.input]
+  }
+}
+
+// Batch Processor, batches the logs before sending them to the OTLP/HTTP exporter.
+otelcol.processor.batch "nginx_logs" {
+  output { logs = [otelcol.exporter.otlphttp.nginx_logs.input] }
+  timeout = "500ms"              // Send at least a batch every timeout (if data is available).
+  send_batch_size = 300      // Send directly after this amount is collected, even if the timeout isn't reached yet.
+  send_batch_max_size = 600  // Maximum number of items to send in a batch. Batches larger than this will be split up, over timeout value.
+}
+
+// EXPORTER
+otelcol.exporter.otlphttp "nginx_logs" {
+  client {
+    endpoint = "{{ alloy_endpoint_url }}"
+  }
+  retry_on_failure {
+    enabled = false
+  }
+}

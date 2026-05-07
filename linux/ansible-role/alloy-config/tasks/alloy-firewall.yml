@@ -1,0 +1,28 @@
+---
+- name: Ensure UFW is installed
+  apt:
+    name: ufw
+    state: present
+
+- name: Open necessary ports for Grafana Alloy
+  ufw:
+    rule: allow
+    port: "{{ item.port }}"
+    proto: "{{ item.proto }}"
+  loop:
+    - { port: 4318, proto: tcp } # OTLP/HTTP
+    - { port: 12345, proto: tcp } # Alloy Status
+      
+- name: Enable UFW
+  ufw:
+    state: enabled
+
+- name: Reload UFW
+  ufw:
+    state: reloaded
+
+- name: Ensure UFW is started at boot
+  service:
+    name: ufw
+    enabled: yes
+    state: started

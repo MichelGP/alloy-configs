@@ -1,0 +1,83 @@
+// --------------------------
+//    URL CHECKS
+// --------------------------
+prometheus.exporter.blackbox "urls" {
+  // define modules inline (could also use config_file)
+  config = "{ modules: { http_2xx: { prober: http, timeout: 5s } } }"
+
+  target {
+    name    = "example"
+    address = "https://www.example.org"
+    module  = "http_2xx"
+    labels  = { url = "example" }
+  }
+}
+
+prometheus.scrape "blackbox" {
+  targets    = prometheus.exporter.blackbox.urls.targets
+  forward_to = [otelcol.receiver.prometheus.urls.receiver]
+}
+
+
+// Prometheus Receiver, receives the scraped metrics and forwards them to the Resource Detection processor.
+otelcol.receiver.prometheus "urls" {
+  output {
+    metrics = [otelcol.processor.resourcedetection.urls.input]
+  }
+}
+
+// Host Resource Detection, adds resource attributes to the metrics (like hostname).
+otelcol.processor.resourcedetection "urls" {
+  detectors = ["system"]
+  system {
+    hostname_sources = ["os"]
+  }
+
+  output {
+    metrics = [otelcol.processor.transform.urls.input]
+  }
+}
+
+// Adds service.name, this helps with drilldown and quering in Grafana.
+otelcol.processor.transform "urls" {
+  metric_statements {
+    context = "resource"
+    statements = [
+      `set(attributes["service.name"], "linux-host")`,
+      `set(attributes["service.instance.id"], attributes["host.name"])`,
+    ]
+  }
+  output { metrics = [otelcol.processor.memory_limiter.urls.input] }
+}
+
+// Memory Limiter Processor, limits the memory usage of the collector. Should always be placed before any batch processor.
+otelcol.processor.memory_limiter "urls" {
+  check_interval = "5s"     // How often to check memory usage.
+  limit = "128MiB"          // Limit total memory usage to this value.
+  spike_limit = "64MiB"    // Allow for short spikes, e.g. during bursts.
+
+  output {
+      metrics = [otelcol.processor.batch.urls.input]
+  }
+}
+
+// Batch Processor, batches the metrics before sending them to the OTLP/HTTP exporter.
+otelcol.processor.batch "urls" {
+  timeout = "500ms"              // Send at least a batch every timeout (if data is available).
+  send_batch_size = 300      // Send directly after this amount is collected, even if the timeout isn't reached yet.
+  send_batch_max_size = 600  // Maximum number of items to send in a batch. Batches larger than this will be split up, over timeout value.
+
+  output {
+    metrics = [otelcol.exporter.otlphttp.urls.input]
+  }
+}
+
+// OTLP/HTTP Exporter, exports the metrics to the specified endpoint.
+otelcol.exporter.otlphttp "urls" {
+  client {
+    endpoint = "{{ alloy_endpoint_url }}"
+  }
+  retry_on_failure {
+    enabled = false
+  }
+}

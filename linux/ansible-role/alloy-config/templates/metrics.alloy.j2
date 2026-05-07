@@ -1,0 +1,105 @@
+// --------------------------
+// Linux Server Monitoring over Opentelemetry
+// --------------------------
+
+// --------------------------
+//    ALLOY METRICS → OTLP/HTTP
+// --------------------------
+
+// Expose Alloy metrics as a target
+prometheus.exporter.self "alloy" {}
+
+// Scrape Alloy metrics and forward into OTel pipeline.
+prometheus.scrape "alloy_self" {
+  targets       = prometheus.exporter.self.alloy.targets
+  scrape_interval = "10s"
+  forward_to    = [otelcol.receiver.prometheus.metrics.receiver]
+}
+
+// --------------------------
+//    SYSTEM METRICS → OTLP/HTTP
+// --------------------------
+
+// Prometheus Exporter, exposes Linux metrics to be scraped later.
+prometheus.exporter.unix "metrics" {
+  // enable_collectors = ["cpu", "loadavg", "meminfo", "filesystem", "diskstats", "systemd", "processes", "netdev", "conntrack", "boottime", "arp", "nvme", "nfs", "nfsd", "zfs"]
+  set_collectors = ["arp","bcache","bonding","btrfs","buddyinfo","conntrack","cpu","cpufreq",
+    "diskstats","dmi","drbd","drm","edac","entropy","ethtool","fibrechannel",
+    "filefd","filesystem","hwmon","infiniband","interrupts","ipvs","ksmd",
+    "lnstat","loadavg","logind","mdadm","meminfo","meminfo_numa","mountstats",
+    "netclass","netdev","netstat","network_route","nfs","nfsd","ntp","nvme","os",
+    "perf","powersupplyclass","pressure","processes","qdisc","rapl","schedstat",
+    "sockstat","softirqs","softnet","stat","sysctl","systemd","tapestats",
+    "tcpstat","textfile","thermal_zone","time","timex","udp_queues","uname",
+    "vmstat","wifi","xfs","zfs","zoneinfo"]
+}
+
+// Prometheus Scraper, scrapes the Prometheus Exporter above.
+prometheus.scrape "metrics" {
+  targets    = prometheus.exporter.unix.metrics.targets
+  forward_to = [otelcol.receiver.prometheus.metrics.receiver]
+  scrape_interval = "10s"
+}
+
+// Prometheus Receiver, receives the scraped metrics and forwards them to the Resource Detection processor.
+otelcol.receiver.prometheus "metrics" {
+  output {
+    metrics = [otelcol.processor.resourcedetection.metrics.input]
+  }
+}
+
+// Host Resource Detection, adds resource attributes to the metrics (like hostname).
+otelcol.processor.resourcedetection "metrics" {
+  detectors = ["system"]
+  system {
+    hostname_sources = ["os"]
+  }
+
+  output {
+    metrics = [otelcol.processor.transform.metrics.input]
+  }
+}
+
+// Adds service.name, this helps with drilldown and quering in Grafana.
+otelcol.processor.transform "metrics" {
+  metric_statements {
+    context = "resource"
+    statements = [
+      `set(attributes["service.name"], "linux-host")`,
+      `set(attributes["service.instance.id"], attributes["host.name"])`,
+    ]
+  }
+  output { metrics = [otelcol.processor.memory_limiter.metrics.input] }
+}
+
+// Memory Limiter Processor, limits the memory usage of the collector. Should always be placed before any batch processor.
+otelcol.processor.memory_limiter "metrics" {
+  check_interval = "5s"     // How often to check memory usage.
+  limit = "128MiB"          // Limit total memory usage to this value.
+  spike_limit = "64MiB"    // Allow for short spikes, e.g. during bursts.
+
+  output {
+      metrics = [otelcol.processor.batch.metrics.input]
+  }
+}
+
+// Batch Processor, batches the metrics before sending them to the OTLP/HTTP exporter.
+otelcol.processor.batch "metrics" {
+  timeout = "500ms"              // Send at least a batch every timeout (if data is available).
+  send_batch_size = 300      // Send directly after this amount is collected, even if the timeout isn't reached yet.
+  send_batch_max_size = 600  // Maximum number of items to send in a batch. Batches larger than this will be split up, over timeout value.
+
+  output {
+    metrics = [otelcol.exporter.otlphttp.metrics.input]
+  }
+}
+
+// OTLP/HTTP Exporter, exports the metrics to the specified endpoint.
+otelcol.exporter.otlphttp "metrics" {
+  client {
+    endpoint = "{{ alloy_endpoint_url }}"
+  }
+  retry_on_failure {
+    enabled = false
+  }
+}
