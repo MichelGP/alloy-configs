@@ -12,13 +12,6 @@ This repo contains configuration templates and settings for Alloy projects, incl
 2. Adjust paths and settings as needed.
 3. Install any required dependencies.
 
-## Recommended files
-
-- `.eslintrc.js`
-- `.prettierrc`
-- `babel.config.js`
-- `tsconfig.json`
-
 ## Contributing
 
 Feel free to add new configuration examples or improve existing ones.
