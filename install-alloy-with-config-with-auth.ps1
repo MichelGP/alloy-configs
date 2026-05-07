@@ -127,9 +127,15 @@ otelcol.processor.batch "default" {
   }
 }
 
+otelcol.auth.basic "loki_auth" {
+  username = "user"
+  password = "pass"
+}
+
 otelcol.exporter.otlphttp "default" {
   client {
     endpoint = "https://host.example.com/otlp"
+    auth = otelcol.auth.basic.loki_auth.handler
     tls {
       insecure_skip_verify = false
     }
